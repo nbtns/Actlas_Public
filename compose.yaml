@@ -1,0 +1,19 @@
+name: actlas-public
+services:
+  db:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_USER: actlas_demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:?Run npm run demo:setup first}
+      POSTGRES_DB: actlas_demo
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - actlas_demo_db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U actlas_demo -d actlas_demo"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+volumes:
+  actlas_demo_db:

@@ -1,0 +1,12 @@
+# Actlas Public
+- 対話と説明は日本語で行う。
+- この公開用フォルダだけを変更する。元のActlas、本番DB、利用者データは変更しない。
+- この版は採用評価用のローカルデモ。翻訳・AI要約・メール認証・初回設定は停止し、本来の動作はREADMEで説明する。
+- JWTによる認証と先生・生徒・ルームの認可は維持する。
+- .env、アップロード、バックアップ、ログ、個人画像、本番運用情報をGitへ入れない。
+- 秘密値は環境変数から読む。固定の初期パスワードやAPIキーを追加しない。
+- git rebase、git push --force、git reset --hard を使用しない。
+- GitHubへの公開・push・デプロイはユーザーから依頼された場合だけ行う。
+- SemgrepとGitleaksをGitHub Actionsの必須チェックとして維持する。
+- Next.js変更前に node_modules/next/dist/docs/ の該当ガイドを読む。
+- Obsidianは明示的な更新依頼がある場合のみ編集する。

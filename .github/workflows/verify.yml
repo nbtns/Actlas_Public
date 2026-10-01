@@ -1,0 +1,53 @@
+name: Verify
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        app_mode: [standard, guitar]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: actlas_demo
+          POSTGRES_DB: actlas_demo
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U actlas_demo -d actlas_demo"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://actlas_demo@localhost:55432/actlas_demo?schema=public
+      NEXT_PUBLIC_APP_MODE: ${{ matrix.app_mode }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit
+      - run: npm run demo:setup
+      - name: Generate temporary local secrets
+        run: |
+          node -e 'const c=require("node:crypto"); const f=require("node:fs"); f.appendFileSync(process.env.GITHUB_ENV, "JWT_SECRET="+c.randomBytes(32).toString("hex")+"\nDEMO_ACCOUNT_PASSWORD="+c.randomBytes(16).toString("hex")+"\n")'
+      - run: npm run db:generate
+      - run: npm run db:setup
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:public
+      - run: npm run build
+      - name: Verify local API behavior
+        run: |
+          npm start > /tmp/actlas-demo.log 2>&1 &
+          node scripts/smoke-demo.mjs

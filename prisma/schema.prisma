@@ -1,0 +1,528 @@
+// ==============================================
+// Actlas データベーススキーマ
+// ギターレッスン統合コミュニケーションアプリ
+// ==============================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==============================================
+// ユーザー管理（先生/生徒）
+// ==============================================
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String // bcryptでハッシュ化されたパスワード
+  name      String
+  role      Role     @default(STUDENT)
+  avatarUrl String? // プロフィール画像のURL
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // アカウントロック
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until")
+
+  // 2FA（二段階認証）
+  twoFactorCode           String?   @map("two_factor_code")
+  twoFactorExpiresAt      DateTime? @map("two_factor_expires_at")
+  twoFactorFailedAttempts Int       @default(0) @map("two_factor_failed_attempts")
+  twoFactorResendCount    Int       @default(0) @map("two_factor_resend_count")
+  twoFactorLastSentAt     DateTime? @map("two_factor_last_sent_at")
+  sessionVersion          Int       @default(0) @map("session_version")
+
+  // 生徒のプロフィール情報（ダッシュボード・初回登録用）
+  birthDate            DateTime?                  @map("birth_date")
+  gender               String?
+  hobbies              String?
+  favoriteArtists      String?                    @map("favorite_artists")
+  goals                String?
+  totalLessons         Int                        @default(0) @map("total_lessons")
+  specialOfferEligible Boolean                    @default(false) @map("special_offer_eligible")
+  isFirstLogin         Boolean                    @default(true) @map("is_first_login")
+  notificationsEnabled Boolean                    @default(true) @map("notifications_enabled")
+  language             String                     @default("ja")
+  timezone             String                     @default("Asia/Tokyo")
+  pushSubscriptions    PushSubscription[]
+  notificationStates   NotificationChannelState[]
+
+  // 先生として所有するルーム
+  ownedRooms Room[] @relation("RoomOwner")
+
+  // 生徒として所属するルーム
+  studentRoom Room? @relation("RoomStudent")
+
+  // 送信したメッセージ
+  messages Message[]
+
+  // 全体告知（先生として投稿 / 生徒としてリアクション）
+  announcements             Announcement[]          @relation("AnnouncementTeacher")
+  announcementReactions     AnnouncementReaction[]  @relation("AnnouncementReactionStudent")
+  announcementReadStates    AnnouncementReadState[] @relation("AnnouncementReadStateUser")
+  announcementTeacherStates AnnouncementReadState[] @relation("AnnouncementReadStateTeacher")
+  announcementDeliveries    AnnouncementDelivery[]  @relation("AnnouncementDeliveryRecipient")
+
+  // 予約（生徒として）
+  reservations Reservation[]
+
+  // ブロック時間帯（先生として）
+  blockedSlots BlockedSlot[]
+
+  // アップロードしたファイル
+  files File[]
+
+  // 先生の公開プロフィール
+  teacherProfile TeacherProfile?
+
+  @@map("users")
+}
+
+// ユーザーの役割
+enum Role {
+  TEACHER // 先生（管理者）
+  STUDENT // 生徒
+}
+
+// ==============================================
+// 生徒別ルーム
+// 各生徒ごとに1つのルームを持つ
+// ==============================================
+model Room {
+  id            String    @id @default(uuid())
+  name          String // 表示名（通常は生徒の名前）
+  lastMessage   String?   @map("last_message") // ルーム内の最新メッセージ内容
+  lastMessageAt DateTime? @map("last_message_at") // ルーム内の最新メッセージ日時
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  // ルームのオーナー（先生）
+  ownerId String @map("owner_id")
+  owner   User   @relation("RoomOwner", fields: [ownerId], references: [id])
+
+  // ルームに所属する生徒（1ルーム = 1生徒）
+  studentId String @unique @map("student_id")
+  student   User   @relation("RoomStudent", fields: [studentId], references: [id])
+
+  // ルーム内のチャンネル
+  channels Channel[]
+
+  @@map("rooms")
+}
+
+// ==============================================
+// チャンネル（ルーム内の各機能エリア）
+// デフォルト: chat, material, booking, memo（生徒用）
+//            lesson_record, dashboard（先生専用）
+// ==============================================
+model Channel {
+  id          String      @id @default(uuid())
+  name        String // チャンネル名（例: "チャット", "楽譜"）
+  type        ChannelType @default(CHAT)
+  position    Int         @default(0) // 表示順
+  teacherOnly Boolean     @default(false) @map("teacher_only") // trueの場合、先生にのみ表示
+  icon        String? // カスタムアイコン名
+  createdAt   DateTime    @default(now()) @map("created_at")
+
+  // 所属するルーム
+  roomId String @map("room_id")
+  room   Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  // チャンネル内のメッセージ
+  messages Message[]
+
+  // チャンネル内のファイル
+  files File[]
+
+  notificationStates NotificationChannelState[]
+
+  @@map("channels")
+}
+
+// チャンネルの種類
+enum ChannelType {
+  GUIDE // 使い方ガイド（アプリの説明、初回表示用）
+  CHAT // 通常チャット
+  MATERIAL // 教材共有
+  LESSON_RECORD // レッスン記録（先生専用）
+  BOOKING // 予約
+  MEMO // メモ（生徒用の自由記入チャンネル）
+  DASHBOARD // ダッシュボード（先生専用、進捗管理・レッスン回数等）
+  YOUTUBE // YouTube同時視聴
+  CUSTOM // カスタムチャンネル
+}
+
+// ==============================================
+// チャットメッセージ
+// ==============================================
+model Message {
+  id        String   @id @default(uuid())
+  content   String // メッセージ本文
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 送信者
+  authorId String @map("author_id")
+  author   User   @relation(fields: [authorId], references: [id])
+
+  // 所属するチャンネル
+  channelId String  @map("channel_id")
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  // メッセージに添付されたファイル
+  files File[]
+
+  // システムメッセージフラグ（自動投稿用）
+  isSystem Boolean @default(false) @map("is_system")
+
+  // ピン留め
+  isPinned Boolean @default(false) @map("is_pinned")
+
+  // 返信先（自己参照リレーション）
+  replyToId String?   @map("reply_to_id")
+  replyTo   Message?  @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies   Message[] @relation("MessageReplies")
+
+  @@map("messages")
+}
+
+// ==============================================
+// 全体告知（先生から所属する全生徒への一方向のお知らせ）
+// ==============================================
+model Announcement {
+  id        String   @id @default(uuid())
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  teacherId String @map("teacher_id")
+  teacher   User   @relation("AnnouncementTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+
+  reactions  AnnouncementReaction[]
+  deliveries AnnouncementDelivery[]
+
+  @@index([teacherId, createdAt])
+  @@map("announcements")
+}
+
+model AnnouncementReaction {
+  id        String   @id @default(uuid())
+  emoji     String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  announcementId String       @map("announcement_id")
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  studentId String @map("student_id")
+  student   User   @relation("AnnouncementReactionStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, studentId, emoji])
+  @@index([announcementId, emoji])
+  @@map("announcement_reactions")
+}
+
+model AnnouncementReadState {
+  id         String    @id @default(uuid())
+  notifiedAt DateTime  @default(now()) @map("notified_at")
+  readAt     DateTime? @map("read_at")
+
+  teacherId String @map("teacher_id")
+  teacher   User   @relation("AnnouncementReadStateTeacher", fields: [teacherId], references: [id], onDelete: Cascade)
+
+  userId String @map("user_id")
+  user   User   @relation("AnnouncementReadStateUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, userId])
+  @@index([userId, notifiedAt])
+  @@map("announcement_read_states")
+}
+
+model AnnouncementDelivery {
+  id            String    @id @default(uuid())
+  eventKind     String    @map("event_kind")
+  titleJa       String    @map("title_ja")
+  titleEn       String    @map("title_en")
+  bodyJa        String    @map("body_ja")
+  bodyEn        String    @map("body_en")
+  url           String
+  tag           String
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  lastError     String?   @map("last_error")
+  deliveredAt   DateTime? @map("delivered_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  announcementId String       @map("announcement_id")
+  announcement   Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+
+  recipientId String @map("recipient_id")
+  recipient   User   @relation("AnnouncementDeliveryRecipient", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@index([deliveredAt, attempts, createdAt])
+  @@index([recipientId, deliveredAt])
+  @@map("announcement_deliveries")
+}
+
+// ==============================================
+// レッスン予約
+// ==============================================
+model Reservation {
+  id        String            @id @default(uuid())
+  startTime DateTime          @map("start_time") // レッスン開始時刻
+  endTime   DateTime          @map("end_time") // レッスン終了時刻
+  status    ReservationStatus @default(PENDING)
+  notes     String? // メモ（生徒からのリクエスト等）
+  createdAt DateTime          @default(now()) @map("created_at")
+  updatedAt DateTime          @updatedAt @map("updated_at")
+
+  // Stripe関連
+  stripeSessionId          String? @unique @map("stripe_session_id")
+  stripePaymentId          String? @unique @map("stripe_payment_id")
+  stripeConnectedAccountId String? @map("stripe_connected_account_id")
+  amountPaid               Int?    @map("amount_paid") // 支払い金額（USD、ドル整数）
+
+  // 予約した生徒
+  studentId String @map("student_id")
+  student   User   @relation(fields: [studentId], references: [id])
+
+  // 予約したレッスンメニュー
+  lessonMenuId String?     @map("lesson_menu_id")
+  lessonMenu   LessonMenu? @relation(fields: [lessonMenuId], references: [id])
+
+  // レッスン記録（レッスン実施後に紐付け）
+  lessonRecord LessonRecord?
+
+  reminders ReservationReminder[]
+
+  @@map("reservations")
+}
+
+// 予約ステータス
+model PushSubscription {
+  id         String    @id @default(uuid())
+  endpoint   String    @unique
+  p256dh     String
+  auth       String
+  userAgent  String?   @map("user_agent")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_subscriptions")
+}
+
+model ReservationReminder {
+  id            String    @id @default(uuid())
+  offsetMinutes Int       @map("offset_minutes")
+  sentAt        DateTime? @map("sent_at")
+  attempts      Int       @default(0)
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  lastError     String?   @map("last_error")
+
+  reservationId String      @map("reservation_id")
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@unique([reservationId, offsetMinutes])
+  @@map("reservation_reminders")
+}
+
+model NotificationChannelState {
+  id         String    @id @default(uuid())
+  notifiedAt DateTime  @default(now()) @map("notified_at")
+  readAt     DateTime? @map("read_at")
+
+  userId String @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  channelId String  @map("channel_id")
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelId])
+  @@index([userId, notifiedAt])
+  @@map("notification_channel_states")
+}
+
+enum ReservationStatus {
+  PENDING // 決済待ち
+  CONFIRMED // 決済完了・確定
+  CANCELLED // キャンセル済み
+  COMPLETED // レッスン完了
+  REFUNDED // 返金済み
+}
+
+// ==============================================
+// 先生のブロック時間帯（予約不可の時間）
+// ==============================================
+model BlockedSlot {
+  id        String   @id @default(uuid())
+  startTime DateTime @map("start_time")
+  endTime   DateTime @map("end_time")
+  reason    String? // ブロック理由（任意）
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // ブロックした先生
+  teacherId String @map("teacher_id")
+  teacher   User   @relation(fields: [teacherId], references: [id])
+
+  @@map("blocked_slots")
+}
+
+// ==============================================
+// レッスン記録（予約ごとの正式な記録用に予約）
+// 現行のAI要約は、先生専用のLESSON_RECORDチャンネル内messagesへ投稿する。
+// ==============================================
+model LessonRecord {
+  id        String   @id @default(uuid())
+  summary   String? // 将来、予約に紐づくAI要約を保存するためのフィールド
+  duration  Int? // レッスン時間（分）
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 紐付けられた予約
+  reservationId String      @unique @map("reservation_id")
+  reservation   Reservation @relation(fields: [reservationId], references: [id])
+
+  // 翻訳ログ（将来の予約連携用）
+  translationLogs TranslationLog[]
+
+  @@map("lesson_records")
+}
+
+// ==============================================
+// 翻訳ログ（将来、予約ごとのレッスン記録に紐づけて保存するための予約モデル）
+// 現行の要約生成は通話中の確定字幕ログを一時的にまとめ、messagesへ投稿する。
+// ==============================================
+model TranslationLog {
+  id             String   @id @default(uuid())
+  originalText   String   @map("original_text") // 元のテキスト
+  translatedText String   @map("translated_text") // 翻訳後のテキスト
+  language       String // 言語コード（例: "ja", "en"）
+  speaker        String // 話者（"teacher" or "student"）
+  timestamp      DateTime // 発言時刻
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  // 所属するレッスン記録
+  lessonRecordId String       @map("lesson_record_id")
+  lessonRecord   LessonRecord @relation(fields: [lessonRecordId], references: [id], onDelete: Cascade)
+
+  @@map("translation_logs")
+}
+
+// ==============================================
+// 共有ファイル管理
+// ==============================================
+model File {
+  id        String   @id @default(uuid())
+  filename  String // 元のファイル名
+  path      String // サーバー上の保存パス
+  mimeType  String   @map("mime_type") // ファイルの種類
+  size      Int // ファイルサイズ（バイト）
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // アップロードしたユーザー
+  uploadedById String @map("uploaded_by_id")
+  uploadedBy   User   @relation(fields: [uploadedById], references: [id])
+
+  // 所属するチャンネル
+  channelId String  @map("channel_id")
+  channel   Channel @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  // 添付されたメッセージ（任意）
+  messageId String?  @map("message_id")
+  message   Message? @relation(fields: [messageId], references: [id])
+
+  @@map("files")
+}
+
+// ==============================================
+// 先生の公開プロフィール
+// ==============================================
+model TeacherProfile {
+  id                       String    @id @default(uuid())
+  username                 String    @unique // URLスラグ（例: "demo-teacher" -> /profile）
+  title                    String? // 肩書き・キャッチコピー
+  bio                      String? // 自己紹介
+  photoUrl                 String?   @map("photo_url")
+  photoPositionX           Int       @default(50) @map("photo_position_x")
+  photoPositionY           Int       @default(50) @map("photo_position_y")
+  photoZoom                Int       @default(100) @map("photo_zoom")
+  stripeConnectedAccountId String?   @map("stripe_connected_account_id")
+  stripeConnectedLivemode  Boolean?  @map("stripe_connected_livemode")
+  stripeConnectedAt        DateTime? @map("stripe_connected_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 紐づくユーザー（先生）
+  userId String @unique @map("user_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // レッスンメニュー
+  menus LessonMenu[]
+
+  // 特商法情報
+  commercialLaw CommercialLawInfo?
+
+  @@map("teacher_profiles")
+}
+
+// ==============================================
+// レッスンメニュー（先生が複数設定可能）
+// ==============================================
+model LessonMenu {
+  id           String  @id @default(uuid())
+  name         String // メニュー名（例: "ギター初回体験", "月4回コース"）
+  description  String? // メニュー内容の説明
+  price        Int // 通常料金（USD、ドル整数）
+  specialPrice Int?    @map("special_price") // 特価ラベル付き生徒向けの料金（USD、ドル整数）
+  duration     Int // レッスン時間（分）
+  displayOrder Int     @default(0) @map("display_order")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 所属する先生プロフィール
+  profileId String         @map("profile_id")
+  profile   TeacherProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  // 紐づく予約
+  reservations Reservation[]
+
+  @@map("lesson_menus")
+}
+
+// ==============================================
+// 特定商取引法に基づく表記情報
+// ==============================================
+model CommercialLawInfo {
+  id                 String  @id @default(uuid())
+  legalName          String  @map("legal_name") // 事業者の氏名
+  address            String // 住所
+  phone              String // 電話番号
+  businessHours      String? @map("business_hours") // 営業時間・連絡可能時間
+  priceExplanation   String? @map("price_explanation") // 販売価格について（追加手数料等）
+  paymentMethods     String? @map("payment_methods") // 支払方法（Stripeを通すためクレジットカード等）
+  deliveryTime       String? @map("delivery_time") // サービスの提供時期（予約日時に提供等）
+  cancellationPolicy String  @map("cancellation_policy") // キャンセル・返金ポリシー
+
+  termsOfServiceEn String? @map("terms_of_service_en") // 海外向け: Terms of Service
+  refundPolicyEn   String? @map("refund_policy_en") // 海外向け: Refund Policy
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 所属する先生プロフィール
+  profileId String         @unique @map("profile_id")
+  profile   TeacherProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@map("commercial_law_infos")
+}
